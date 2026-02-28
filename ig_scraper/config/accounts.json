@@ -1,0 +1,14 @@
+
+[
+  {
+    "username": "your_instagram_username_1",
+    "password": "your_instagram_password_1",
+    "session": "sessions/account1"
+  },
+  {
+    "username": "your_instagram_username_2",
+    "password": "your_instagram_password_2",
+    "session": "sessions/account2"
+  }
+]
+

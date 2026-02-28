@@ -1,0 +1,6 @@
+playwright
+python-dotenv
+streamlit
+pandas
+
+httpx
