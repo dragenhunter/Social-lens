@@ -50,6 +50,36 @@ def _is_instagram_source(source: dict) -> bool:
     return str(platform) in platform_ids
 
 
+def _resolve_env_placeholder(value: str) -> str:
+    if not isinstance(value, str):
+        return value
+    cleaned = value.strip()
+    if cleaned.startswith("${") and cleaned.endswith("}") and len(cleaned) > 3:
+        env_name = cleaned[2:-1].strip()
+        return os.getenv(env_name, "")
+    return value
+
+
+def _resolve_account_secrets(accounts: list[dict]) -> list[dict]:
+    resolved: list[dict] = []
+    for account in accounts:
+        if not isinstance(account, dict):
+            continue
+
+        mapped = {
+            key: _resolve_env_placeholder(value) if isinstance(value, str) else value
+            for key, value in account.items()
+        }
+
+        if not mapped.get("username") or not mapped.get("password"):
+            session = mapped.get("session", "unknown-session")
+            print(f"Skipping account config for {session}: missing username/password after env resolution.")
+            continue
+
+        resolved.append(mapped)
+    return resolved
+
+
 async def load_instagram_targets() -> list[dict]:
     targets: list[dict] = []
     seen: set[str] = set()
@@ -119,6 +149,8 @@ async def main():
 
     with open(accounts_path, encoding="utf-8") as f:
         accounts = json.load(f)
+
+    accounts = _resolve_account_secrets(accounts)
 
     if not accounts:
         print(f"No accounts found in {accounts_path}")

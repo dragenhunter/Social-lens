@@ -1,14 +1,29 @@
 
 [
   {
-    "username": "your_instagram_username_1",
-    "password": "your_instagram_password_1",
-    "session": "sessions/account1"
+    "username": "${IG_ACCOUNT_1_USERNAME}",
+    "password": "${IG_ACCOUNT_1_PASSWORD}",
+    "session": "sessions/huzaifa"
   },
   {
-    "username": "your_instagram_username_2",
-    "password": "your_instagram_password_2",
-    "session": "sessions/account2"
+    "username": "${IG_ACCOUNT_2_USERNAME}",
+    "password": "${IG_ACCOUNT_2_PASSWORD}",
+    "session": "sessions/zaheerabdullah1212"
+  },
+  {
+    "username": "${IG_ACCOUNT_3_USERNAME}",
+    "password": "${IG_ACCOUNT_3_PASSWORD}",
+    "session": "sessions/siyaabjan"
+  },
+  {
+    "username": "${IG_ACCOUNT_4_USERNAME}",
+    "password": "${IG_ACCOUNT_4_PASSWORD}",
+    "session": "sessions/ahmedfaiz112001"
+  },
+  {
+    "username": "${IG_ACCOUNT_5_USERNAME}",
+    "password": "${IG_ACCOUNT_5_PASSWORD}",
+    "session": "sessions/ahmerali332002"
   }
 ]
 
