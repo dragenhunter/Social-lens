@@ -22,6 +22,7 @@ source .venv/bin/activate
 echo "[3/6] Installing Python deps"
 pip install --upgrade pip
 pip install -r ig_scraper/requirements.txt
+playwright install-deps chromium
 playwright install chromium
 
 echo "[4/6] Preparing env file"
