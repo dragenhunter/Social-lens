@@ -36,7 +36,7 @@ async def ensure_logged_in(page, account, max_retries=2):
 
         # Navigate to explicit login page and submit credentials
         await page.goto(f"{BASE_URL}/accounts/login/", timeout=30000)
-        await page.wait_for_load_state('networkidle')
+        await page.wait_for_load_state('domcontentloaded')
         # try dismissing common cookie/privacy banners
         for banner in ('text=Accept All', 'text=Accept', 'text=Agree', 'button:has-text("Accept")'):
             try:
@@ -45,13 +45,26 @@ async def ensure_logged_in(page, account, max_retries=2):
             except Exception:
                 pass
 
+        # wait for any known login input to appear; IG can serve multiple form variants
+        try:
+            await page.wait_for_selector(
+                'input[name="username"], input[name="email"], input[autocomplete="username"], input[type="password"], input[name="pass"], input[name="password"]',
+                timeout=12000,
+            )
+        except Exception:
+            print("Login form did not render in time. url=", page.url)
+
         username_selectors = [
             'input[name="username"]',
+            'input[name="email"]',
+            'input[autocomplete="username"]',
             'input[aria-label="Phone number, username, or email"]',
             'input[type="text"]',
         ]
         password_selectors = [
             'input[name="password"]',
+            'input[name="pass"]',
+            'input[autocomplete="current-password"]',
             'input[type="password"]',
         ]
 
@@ -97,6 +110,10 @@ async def ensure_logged_in(page, account, max_retries=2):
                     continue
 
             if not (filled_user and filled_pass):
+                try:
+                    print("Could not find login inputs on url:", page.url)
+                except Exception:
+                    pass
                 await asyncio.sleep(1)
                 continue
 
@@ -105,6 +122,7 @@ async def ensure_logged_in(page, account, max_retries=2):
             submit_selectors = [
                 'div[aria-label="Log In"]',
                 'div[aria-label="Log in"]',
+                'button[name="login"]',
                 'button[type="submit"]',
                 'button:has-text("Log In")',
                 'text=Log In',
