@@ -339,7 +339,22 @@ async def run_account(account, targets):
                     await page.goto(f"{BASE_URL}/{u}/", wait_until="domcontentloaded")
                     await pause(gov.mult)
 
-                html = await page.inner_html("main")
+                if "/challenge/" in page.url or "/checkpoint/" in page.url:
+                    print(f"Skipping {u}: challenge/checkpoint page encountered ({page.url})")
+                    continue
+
+                html = ""
+                try:
+                    await page.wait_for_selector("main", timeout=8000)
+                    html = await page.inner_html("main", timeout=5000)
+                except Exception:
+                    try:
+                        html = await page.inner_html("body", timeout=5000)
+                        print(f"Using body fallback for {u}: 'main' not found on {page.url}")
+                    except Exception:
+                        html = await page.content()
+                        print(f"Using page.content fallback for {u}: body/main unavailable on {page.url}")
+
                 record("article", html)
 
                 await scrape_profile(page, u)
