@@ -199,11 +199,21 @@ async def main():
 
     async def run_limited(acc, batch):
         async with semaphore:
-            return await run_account(acc, batch)
+            try:
+                return await run_account(acc, batch)
+            except Exception as e:
+                username = acc.get("username", "unknown")
+                print(f"Account run failed for {username}: {e}")
+                return e
 
-    await asyncio.gather(
-        *[run_limited(acc, batch) for acc, batch in account_batches]
+    results = await asyncio.gather(
+        *[run_limited(acc, batch) for acc, batch in account_batches],
+        return_exceptions=False,
     )
+
+    failed = [r for r in results if isinstance(r, Exception)]
+    if failed:
+        print(f"Completed with {len(failed)} account-level failure(s).")
 
 if __name__ == "__main__":
     asyncio.run(main())

@@ -11,7 +11,7 @@ from storage import api_client
 
 async def scrape_posts(page, username, budget, gov, source_id=""):
     post_urls = await page.evaluate(
-        """
+        r"""
         () => {
             const urls = Array.from(document.querySelectorAll('a[href*="/p/"], a[href*="/reel/"]'))
                 .map(a => a.href ? a.href.split('?')[0].replace(/\/$/, '') : null)
@@ -64,7 +64,7 @@ async def scrape_posts(page, username, budget, gov, source_id=""):
         await pause(gov.mult)
 
         post = await page.evaluate(
-            """
+            r"""
             () => {
                 const text = (el) => (el && el.innerText ? el.innerText : "").trim();
                 const numberFrom = (raw) => {
