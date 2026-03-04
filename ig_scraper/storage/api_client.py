@@ -60,6 +60,29 @@ class APIClient:
         except Exception:
             return None
 
+    @staticmethod
+    def _normalize_external_post_id(value: Any) -> str:
+        if not isinstance(value, str):
+            return ""
+        cleaned = value.strip()
+        if not cleaned:
+            return ""
+
+        lower = cleaned.lower()
+        if lower.startswith("http://") or lower.startswith("https://"):
+            try:
+                from urllib.parse import urlparse
+
+                parsed = urlparse(cleaned)
+                cleaned = parsed.path or ""
+            except Exception:
+                pass
+
+        if not cleaned.startswith("/"):
+            cleaned = f"/{cleaned}"
+
+        return cleaned.rstrip("/")
+
     async def _request_with_retries(self, method: str, url: str, **kwargs) -> httpx.Response | None:
         await self._ensure_client()
         last_exc: Exception | None = None
@@ -237,8 +260,9 @@ class APIClient:
             if not isinstance(item, dict):
                 continue
             external_post_id = item.get("externalPostId")
-            if isinstance(external_post_id, str) and external_post_id:
-                post_ids.add(external_post_id)
+            normalized = self._normalize_external_post_id(external_post_id)
+            if normalized:
+                post_ids.add(normalized)
         return post_ids
 
     async def write_posts(self, posts: list[dict[str, Any]]) -> Any:
@@ -251,26 +275,33 @@ class APIClient:
         if not source_id or not external_post_id:
             return False
 
+        normalized_target = self._normalize_external_post_id(external_post_id)
+        if not normalized_target:
+            return False
+
         resp = await self._request_with_retries(
             "get",
             "/api/app/scraper/posts",
             params={
                 "SourceId": source_id,
-                "ExternalPostId": external_post_id,
+                "ExternalPostId": normalized_target,
                 "SkipCount": 0,
-                "MaxResultCount": 1,
+                "MaxResultCount": 50,
             },
         )
         data = self._parse_json_safe(resp)
         if not isinstance(data, dict):
             return False
-
-        total_count = data.get("totalCount")
-        if isinstance(total_count, int):
-            return total_count > 0
-
         items = data.get("items")
-        return isinstance(items, list) and len(items) > 0
+        if isinstance(items, list):
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                current = self._normalize_external_post_id(item.get("externalPostId"))
+                if current == normalized_target:
+                    return True
+
+        return False
 
     async def write_profile(self, profile: dict[str, Any]) -> Any:
         resp = await self._request_with_retries("put", "/api/app/profiles", json=profile)

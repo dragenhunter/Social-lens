@@ -1,4 +1,17 @@
 import os
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+
+_SETTINGS_FILE = Path(__file__).resolve()
+_PROJECT_ROOT = _SETTINGS_FILE.parents[1]  # ig_scraper/
+_WORKSPACE_ROOT = _SETTINGS_FILE.parents[2]  # Social lens/
+
+# Load .env early so constants below read the intended values.
+# Prefer explicit environment variables if already set in shell/service.
+load_dotenv(_WORKSPACE_ROOT / ".env", override=False)
+load_dotenv(_PROJECT_ROOT / ".env", override=False)
 
 BASE_URL = "https://www.instagram.com"
 HEADLESS = os.getenv("HEADLESS", "1").strip().lower() in {"1", "true", "yes"}
@@ -7,9 +20,9 @@ MIN_DELAY = 1.2
 MAX_DELAY = 4.0
 
 ACTION_LIMITS = {
-	"scrolls": 40,
-	"clicks": 25,
-	"opens": 15
+	"scrolls": int(os.getenv("BUDGET_SCROLLS", "0") or "0"),
+	"clicks": int(os.getenv("BUDGET_CLICKS", "0") or "0"),
+	"opens": int(os.getenv("BUDGET_OPENS", "0") or "0")
 }
 
 ACTIVE_HOURS = (

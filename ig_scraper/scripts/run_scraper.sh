@@ -13,6 +13,7 @@ cd "$PROJECT_ROOT"
 export FORCE_RUN="${FORCE_RUN:-1}"
 export HEADLESS="${HEADLESS:-1}"
 export PW_NO_SANDBOX="${PW_NO_SANDBOX:-1}"
+export PYTHONUNBUFFERED="${PYTHONUNBUFFERED:-1}"
 
 if [[ -x "$VENV_PYTHON" ]]; then
   "$VENV_PYTHON" "$SCRAPER_DIR/main.py" >> "$LOG_FILE" 2>&1

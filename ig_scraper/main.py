@@ -37,17 +37,28 @@ def _extract_username_from_url(source_url: str) -> str:
 
 
 def _is_instagram_source(source: dict) -> bool:
-    url = (source.get("sourceUrl") or "").lower()
-    if "instagram.com" in url:
-        return True
+    """Check whether a source should be treated as Instagram.
 
-    platform = source.get("platform")
-    platform_ids = {
-        x.strip()
-        for x in os.getenv("INSTAGRAM_PLATFORM_IDS", "2").split(",")
-        if x.strip()
-    }
-    return str(platform) in platform_ids
+    Primary signal is platform id (Instagram=4). URL host is used as an
+    additional safety check when available.
+    """
+    url = (source.get("sourceUrl") or "").strip().lower()
+    platform_value = source.get("platform")
+
+    # Backend enum: Instagram = 4
+    is_platform_instagram = str(platform_value).strip() == "4"
+
+    # Some rows may have non-instagram URLs; only accept if URL is empty or instagram host.
+    if url:
+        try:
+            host = (urlparse(url).netloc or "").lower()
+        except Exception:
+            host = ""
+        is_instagram_host = "instagram.com" in host
+    else:
+        is_instagram_host = True
+
+    return is_platform_instagram and is_instagram_host
 
 
 def _resolve_env_placeholder(value: str) -> str:
@@ -87,7 +98,7 @@ async def load_instagram_targets() -> list[dict]:
     source_scan_limit = int(os.getenv("SOURCE_SCAN_LIMIT", "0") or "0")
     platform_ids = [
         x.strip()
-        for x in os.getenv("INSTAGRAM_PLATFORM_IDS", "2").split(",")
+        for x in os.getenv("INSTAGRAM_PLATFORM_IDS", "4").split(",")
         if x.strip()
     ]
 
@@ -144,6 +155,7 @@ def in_active_window():
 
 async def main():
     force_run = os.getenv("FORCE_RUN", "0").strip() in {"1", "true", "True", "yes", "YES"}
+    strict_serial_accounts = os.getenv("STRICT_SERIAL_ACCOUNTS", "0").strip().lower() in {"1", "true", "yes"}
     if not in_active_window() and not force_run:
         print(f"Outside ACTIVE_HOURS={ACTIVE_HOURS}. Set FORCE_RUN=1 to run manually now.")
         return
@@ -218,10 +230,16 @@ async def main():
                 print(f"Account run failed for {username}: {e}")
                 return e
 
-    results = await asyncio.gather(
-        *[run_limited(acc, batch) for acc, batch in account_batches],
-        return_exceptions=False,
-    )
+    if strict_serial_accounts:
+        print("STRICT_SERIAL_ACCOUNTS enabled: running account batches one-by-one")
+        results = []
+        for acc, batch in account_batches:
+            results.append(await run_limited(acc, batch))
+    else:
+        results = await asyncio.gather(
+            *[run_limited(acc, batch) for acc, batch in account_batches],
+            return_exceptions=False,
+        )
 
     failed = [r for r in results if isinstance(r, Exception)]
     if failed:
