@@ -94,7 +94,11 @@ async def load_instagram_targets() -> list[dict]:
     try:
         sources = []
         for platform_id in platform_ids:
-            platform = int(platform_id)
+            try:
+                platform = int(platform_id)
+            except Exception:
+                print(f"Skipping invalid INSTAGRAM_PLATFORM_IDS value: {platform_id}")
+                continue
             platform_sources = await api_client.fetch_sources(
                 platform=platform,
                 is_active=True,
@@ -181,6 +185,14 @@ async def main():
     if not targets:
         print("No active Instagram sources found from API. Nothing to scrape.")
         return
+
+    scrape_only_target = _normalize_username(os.getenv("SCRAPE_ONLY_TARGET", ""))
+    if scrape_only_target:
+        targets = [t for t in targets if _normalize_username(t.get("username", "")) == scrape_only_target]
+        if not targets:
+            print(f"No matching Instagram source found for SCRAPE_ONLY_TARGET={scrape_only_target}")
+            return
+        print(f"Applied SCRAPE_ONLY_TARGET={scrape_only_target}")
 
     target_limit = int(os.getenv("SCRAPE_TARGET_LIMIT", "0") or "0")
     if target_limit > 0:

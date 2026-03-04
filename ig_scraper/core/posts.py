@@ -1,4 +1,5 @@
 from datetime import datetime
+import os
 from urllib.parse import urlparse
 
 from config.settings import BASE_URL
@@ -9,16 +10,50 @@ from core.diffing import record_post_diff
 from storage import api_client
 
 
+async def _collect_profile_post_urls(page, budget, gov, max_urls: int, max_scrolls: int):
+    collected = []
+    seen = set()
+
+    for _ in range(max_scrolls + 1):
+        urls = await page.evaluate(
+            r"""
+            () => {
+                const urls = [];
+                for (const a of document.querySelectorAll('a[href*="/p/"], a[href*="/reel/"]')) {
+                    const raw = a.href ? a.href.split('?')[0].replace(/\/$/, '') : null;
+                    if (raw) urls.push(raw);
+                }
+                return urls;
+            }
+            """
+        )
+
+        for post_url in urls:
+            if post_url in seen:
+                continue
+            seen.add(post_url)
+            collected.append(post_url)
+            if len(collected) >= max_urls:
+                return collected
+
+        budget.consume("scrolls")
+        await page.mouse.wheel(0, 2200)
+        await pause(gov.mult)
+
+    return collected
+
+
 async def scrape_posts(page, username, budget, gov, source_id=""):
-    post_urls = await page.evaluate(
-        r"""
-        () => {
-            const urls = Array.from(document.querySelectorAll('a[href*="/p/"], a[href*="/reel/"]'))
-                .map(a => a.href ? a.href.split('?')[0].replace(/\/$/, '') : null)
-                .filter(Boolean);
-            return Array.from(new Set(urls)).slice(0, 5);
-        }
-        """
+    max_scan_urls = max(1, int(os.getenv("PROFILE_POST_SCAN_LIMIT", "30") or "30"))
+    max_scan_scrolls = max(0, int(os.getenv("PROFILE_POST_SCAN_SCROLLS", "8") or "8"))
+    stop_on_existing = os.getenv("SCRAPE_UNTIL_EXISTING_URL", "0").strip().lower() in {"1", "true", "yes"}
+
+    post_urls = await _collect_profile_post_urls(
+        page=page,
+        budget=budget,
+        gov=gov,
+        max_urls=max_scan_urls,
+        max_scrolls=max_scan_scrolls,
     )
 
     if not post_urls:
@@ -38,6 +73,7 @@ async def scrape_posts(page, username, budget, gov, source_id=""):
             recent_ids = set()
 
         new_candidates = []
+        existing_boundary_hit = False
         for post_url, external_post_id in post_candidates:
             exists = external_post_id in recent_ids
             if not exists:
@@ -45,10 +81,21 @@ async def scrape_posts(page, username, budget, gov, source_id=""):
                     exists = await api_client.post_exists(source_id, external_post_id)
                 except Exception:
                     exists = False
+
+            if exists:
+                if stop_on_existing:
+                    print(f"Found existing post URL for {username} ({external_post_id}); stopping further scan.")
+                    existing_boundary_hit = True
+                    break
+                continue
+
             if not exists:
                 new_candidates.append((post_url, external_post_id))
 
         if not new_candidates:
+            if existing_boundary_hit:
+                print(f"Reached existing-post boundary for {username}; no new posts before boundary.")
+                return
             print(f"No new posts for {username}; skipping.")
             return
 

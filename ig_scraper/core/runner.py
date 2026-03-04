@@ -17,6 +17,19 @@ from pathlib import Path
 async def ensure_logged_in(page, account, max_retries=2):
     username = account.get("username")
     password = account.get("password")
+
+    async def _has_auth_cookies() -> bool:
+        try:
+            cookies = await page.context.cookies([BASE_URL])
+        except Exception:
+            try:
+                cookies = await page.context.cookies()
+            except Exception:
+                return False
+
+        cookie_names = {str(cookie.get("name", "")).lower() for cookie in cookies}
+        return "sessionid" in cookie_names and "ds_user_id" in cookie_names
+
     # Try to detect logged-in state via the Home icon
     try:
         await page.goto(BASE_URL, wait_until="domcontentloaded")
@@ -30,7 +43,7 @@ async def ensure_logged_in(page, account, max_retries=2):
                 and "/checkpoint/" not in lower
             )
 
-        if _looks_logged_in(page.url):
+        if _looks_logged_in(page.url) and await _has_auth_cookies():
             logged_in_selectors = [
                 'svg[aria-label="Home"]',
                 'a[href="/"]',
@@ -45,8 +58,9 @@ async def ensure_logged_in(page, account, max_retries=2):
                     return True
                 except Exception:
                     continue
-            # URL-based success fallback for UI variants where selectors drift.
-            return True
+            # Cookie-based success fallback for UI variants where selectors drift.
+            if await _has_auth_cookies():
+                return True
 
         # Navigate to explicit login page and submit credentials
         await page.goto(f"{BASE_URL}/accounts/login/", timeout=30000)
@@ -239,7 +253,7 @@ async def ensure_logged_in(page, account, max_retries=2):
                         continue
 
                 await page.wait_for_load_state("domcontentloaded")
-                if _looks_logged_in(page.url):
+                if _looks_logged_in(page.url) and await _has_auth_cookies():
                     return True
             except Exception:
                 pass
@@ -268,36 +282,40 @@ async def ensure_logged_in(page, account, max_retries=2):
         return False
 
 async def run_account(account, targets):
-    if await is_on_cooldown(account["username"]):
+    username = account.get("username")
+    if not username:
+        print("Skipping account with missing username")
+        return
+
+    if await is_on_cooldown(username):
         return
 
     gov = Governor()
     budget = Budget(ACTION_LIMITS)
 
+    session_dir = account.get("session") or f"sessions/{username}"
+
     try:
-        pw, ctx, page = await start_browser(account["session"])
+        pw, ctx, page = await start_browser(session_dir)
     except Exception as e:
-        username = account.get("username")
         print(f"Browser startup failed for {username}: {e}")
-        await set_cooldown(account["username"], 6)
+        await set_cooldown(username, 6)
         return
     # ensure we are logged into Instagram (use session if present, otherwise perform login)
     logged = await ensure_logged_in(page, account)
     if not logged:
-        username = account.get("username")
         login_reason = account.get("_login_failure_reason") or "login_failed"
         print("Login failed for", username)
         quarantine_account(username, reason=login_reason)
         print("Quarantined account", username, "due to repeated login failure")
-        await set_cooldown(account["username"], 48)
+        await set_cooldown(username, 48)
         await ctx.close()
         await pw.stop()
         return
     # On successful login, persist storage state so future runs reuse the session
     try:
-        sess = account.get("session") or f"sessions/{account.get('username')}"
-        os.makedirs(sess, exist_ok=True)
-        storage_path = Path(sess) / "storage_state.json"
+        os.makedirs(session_dir, exist_ok=True)
+        storage_path = Path(session_dir) / "storage_state.json"
         await ctx.storage_state(path=str(storage_path))
         print("Saved storage_state to", storage_path)
     except Exception as e:
@@ -315,7 +333,7 @@ async def run_account(account, targets):
                 if not u:
                     continue
 
-                await page.goto(f"{BASE_URL}/{u}/", wait_until="domcontentloaded")
+                await page.goto(f"{BASE_URL}/{u}/", wait_until="domcontentloaded", timeout=60000)
                 await pause(gov.mult)
 
                 for overlay in (
@@ -336,7 +354,7 @@ async def run_account(account, targets):
                     if not relogged:
                         print(f"Skipping {u}: redirected to login and relogin failed")
                         continue
-                    await page.goto(f"{BASE_URL}/{u}/", wait_until="domcontentloaded")
+                    await page.goto(f"{BASE_URL}/{u}/", wait_until="domcontentloaded", timeout=60000)
                     await pause(gov.mult)
 
                 if "/challenge/" in page.url or "/checkpoint/" in page.url:
@@ -364,8 +382,8 @@ async def run_account(account, targets):
                 continue
     except Exception as e:
         print("Hard error:", e)
-        quarantine_account(account.get("username"), reason=f"hard_error:{type(e).__name__}")
-        await set_cooldown(account["username"], 48)
+        quarantine_account(username, reason=f"hard_error:{type(e).__name__}")
+        await set_cooldown(username, 48)
     finally:
         await ctx.close()
         await pw.stop()

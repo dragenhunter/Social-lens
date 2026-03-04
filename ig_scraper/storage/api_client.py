@@ -14,6 +14,7 @@ API_USER = os.getenv("API_USER", "")
 API_PASS = os.getenv("API_PASS", "")
 API_CLIENT_ID = os.getenv("API_CLIENT_ID", "Lens_App")
 API_SCOPE = os.getenv("API_SCOPE", "Lens")
+API_TIMEOUT_SECONDS = float(os.getenv("API_TIMEOUT_SECONDS", "30"))
 
 logger = logging.getLogger("ig_scraper.api_client")
 if not logger.handlers:
@@ -34,9 +35,12 @@ class APIClient:
         self._max_retries = 3
         self._backoff_factor = 0.5
 
+    def _build_client(self) -> httpx.AsyncClient:
+        return httpx.AsyncClient(base_url=self.base, timeout=API_TIMEOUT_SECONDS)
+
     async def _ensure_client(self) -> None:
         if self._client is None:
-            self._client = httpx.AsyncClient(base_url=self.base, timeout=30.0)
+            self._client = self._build_client()
         if not self._has_valid_token():
             await self.login()
 
@@ -59,12 +63,35 @@ class APIClient:
     async def _request_with_retries(self, method: str, url: str, **kwargs) -> httpx.Response | None:
         await self._ensure_client()
         last_exc: Exception | None = None
+        retriable_statuses = {408, 429, 500, 502, 503, 504}
 
         for attempt in range(1, self._max_retries + 1):
             try:
                 assert self._client is not None
                 resp = await self._client.request(method, url, follow_redirects=True, **kwargs)
                 logger.info("%s %s -> %d", method.upper(), url, resp.status_code)
+
+                if resp.status_code == 401:
+                    logger.warning("401 on %s %s; refreshing OAuth token", method.upper(), url)
+                    self._access_token = None
+                    self._token_expiry = None
+                    login_ok = await self.login()
+                    if login_ok:
+                        continue
+
+                if resp.status_code in retriable_statuses and attempt < self._max_retries:
+                    sleep_for = self._backoff_factor * (2 ** (attempt - 1))
+                    logger.warning(
+                        "Retryable HTTP status %d for %s %s attempt %d; retrying in %.2fs",
+                        resp.status_code,
+                        method.upper(),
+                        url,
+                        attempt,
+                        sleep_for,
+                    )
+                    await asyncio.sleep(sleep_for)
+                    continue
+
                 return resp
             except Exception as exc:
                 last_exc = exc
@@ -85,7 +112,7 @@ class APIClient:
     async def login(self, username: str | None = None, password: str | None = None) -> bool:
         async with self._lock:
             if self._client is None:
-                self._client = httpx.AsyncClient(base_url=self.base, timeout=30.0)
+                self._client = self._build_client()
 
             if self._has_valid_token():
                 return True

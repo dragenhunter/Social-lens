@@ -21,9 +21,10 @@ def _build_chromium_args() -> list[str]:
 async def start_browser(session_dir):
     # Ensure session_dir exists; Playwright will use it as user data dir
     os.makedirs(session_dir, exist_ok=True)
-    storage_path = os.path.join(session_dir, "storage_state.json")
 
     pw = await async_playwright().start()
+    default_action_timeout_ms = int(os.getenv("PW_ACTION_TIMEOUT_MS", "30000") or "30000")
+    default_nav_timeout_ms = int(os.getenv("PW_NAV_TIMEOUT_MS", "60000") or "60000")
     ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
     launch_kwargs = {
         "headless": HEADLESS,
@@ -45,5 +46,7 @@ async def start_browser(session_dir):
                 "Playwright could not start Chromium. On Ubuntu run: 'playwright install-deps chromium' and 'playwright install chromium'."
             ) from second_error
 
-    page = await ctx.new_page()
+    ctx.set_default_timeout(default_action_timeout_ms)
+    ctx.set_default_navigation_timeout(default_nav_timeout_ms)
+    page = ctx.pages[0] if ctx.pages else await ctx.new_page()
     return pw, ctx, page
