@@ -17,6 +17,16 @@ from pathlib import Path
 async def ensure_logged_in(page, account, max_retries=2):
     username = account.get("username")
     password = account.get("password")
+    account["_login_failure_reason"] = ""
+
+    def _is_challenge_like_url(url: str) -> bool:
+        lower = (url or "").lower()
+        return (
+            "/challenge/" in lower
+            or "/checkpoint/" in lower
+            or "/auth_platform/codeentry" in lower
+            or "two_factor" in lower
+        )
 
     async def _has_auth_cookies() -> bool:
         try:
@@ -65,6 +75,11 @@ async def ensure_logged_in(page, account, max_retries=2):
         # Navigate to explicit login page and submit credentials
         await page.goto(f"{BASE_URL}/accounts/login/", timeout=30000)
         await page.wait_for_load_state('domcontentloaded')
+
+        if _is_challenge_like_url(page.url):
+            account["_login_failure_reason"] = "challenge_required"
+            return False
+
         # try dismissing common cookie/privacy banners
         for banner in ('text=Accept All', 'text=Accept', 'text=Agree', 'button:has-text("Accept")'):
             try:
@@ -129,6 +144,12 @@ async def ensure_logged_in(page, account, max_retries=2):
 
         for attempt in range(max_retries):
             print(f"Login attempt {attempt+1}/{max_retries} for {username}")
+
+            if _is_challenge_like_url(page.url):
+                account["_login_failure_reason"] = "challenge_required"
+                print(f"Challenge/checkpoint flow detected for {username}: {page.url}")
+                return False
+
             # fill username
             filled_user = False
             for us in username_selectors:
@@ -262,7 +283,7 @@ async def ensure_logged_in(page, account, max_retries=2):
             if failure_reason:
                 account["_login_failure_reason"] = failure_reason
                 print(f"Detected login failure reason for {username}: {failure_reason}")
-                if failure_reason == "invalid_credentials":
+                if failure_reason in {"invalid_credentials", "challenge_required"}:
                     return False
 
             # save debug artifacts to inspect why login didn't complete
@@ -277,8 +298,12 @@ async def ensure_logged_in(page, account, max_retries=2):
             except Exception as e:
                 print("Failed to save debug artifacts:", e)
             await asyncio.sleep(2)
+        if not account.get("_login_failure_reason"):
+            account["_login_failure_reason"] = "login_failed"
         return False
     except Exception:
+        if not account.get("_login_failure_reason"):
+            account["_login_failure_reason"] = "login_failed"
         return False
 
 async def run_account(account, targets):
@@ -306,9 +331,16 @@ async def run_account(account, targets):
     if not logged:
         login_reason = account.get("_login_failure_reason") or "login_failed"
         print("Login failed for", username)
-        quarantine_account(username, reason=login_reason)
-        print("Quarantined account", username, "due to repeated login failure")
-        await set_cooldown(username, 48)
+        if login_reason == "invalid_credentials":
+            quarantine_account(username, reason=login_reason)
+            print("Quarantined account", username, "due to invalid credentials")
+            await set_cooldown(username, 48)
+        elif login_reason == "challenge_required":
+            print("Challenge required for", username, "- skipping without quarantine")
+            await set_cooldown(username, 6)
+        else:
+            print("Transient login failure for", username, "- skipping without quarantine")
+            await set_cooldown(username, 6)
         await ctx.close()
         await pw.stop()
         return
