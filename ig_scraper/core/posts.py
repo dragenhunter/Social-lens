@@ -58,6 +58,29 @@ async def _scrape_and_write_open_post(page, username, gov, source_id: str, exter
         r"""
         () => {
             const text = (el) => (el && el.innerText ? el.innerText : "").trim();
+            const attr = (el, key) => (el && el.getAttribute ? (el.getAttribute(key) || "") : "").trim();
+            const clean = (value) => {
+                if (!value) return "";
+                return String(value)
+                    .replace(/\s+/g, ' ')
+                    .replace(/^\s+|\s+$/g, '');
+            };
+            const firstNonEmpty = (values) => {
+                for (const value of values) {
+                    const current = clean(value);
+                    if (current) return current;
+                }
+                return "";
+            };
+            const normalizeMetaDescription = (value) => {
+                const current = clean(value);
+                if (!current) return "";
+                const idx = current.indexOf(': "');
+                if (idx >= 0 && current.endsWith('"')) {
+                    return clean(current.slice(idx + 3, -1));
+                }
+                return current;
+            };
             const numberFrom = (raw) => {
                 if (!raw) return 0;
                 const cleaned = raw.replace(/,/g, '').trim();
@@ -73,9 +96,43 @@ async def _scrape_and_write_open_post(page, username, gov, source_id: str, exter
             };
 
             const captionEl =
+                document.querySelector('article h1') ||
                 document.querySelector('h1') ||
-                document.querySelector('article ul li span') ||
-                document.querySelector('article div[role="button"] span');
+                document.querySelector('article ul li h1') ||
+                document.querySelector('article ul li div[dir="auto"] span') ||
+                document.querySelector('article ul li span');
+
+            const ogDescriptionEl = document.querySelector('meta[property="og:description"]');
+            const descriptionEl = document.querySelector('meta[name="description"]');
+
+            let ldJsonCaption = "";
+            try {
+                for (const script of document.querySelectorAll('script[type="application/ld+json"]')) {
+                    const raw = script.textContent || '';
+                    if (!raw.trim()) continue;
+                    const parsed = JSON.parse(raw);
+                    const nodes = Array.isArray(parsed) ? parsed : [parsed];
+                    for (const node of nodes) {
+                        if (!node || typeof node !== 'object') continue;
+                        const maybeCaption =
+                            node.caption ||
+                            node.articleBody ||
+                            (node.description && !String(node.description).includes('Instagram photos and videos'));
+                        if (maybeCaption) {
+                            ldJsonCaption = clean(maybeCaption);
+                            break;
+                        }
+                    }
+                    if (ldJsonCaption) break;
+                }
+            } catch (_) {}
+
+            const caption = firstNonEmpty([
+                text(captionEl),
+                ldJsonCaption,
+                normalizeMetaDescription(attr(ogDescriptionEl, 'content')),
+                normalizeMetaDescription(attr(descriptionEl, 'content')),
+            ]);
 
             const likesEl =
                 document.querySelector('section a[href*="liked_by"] span') ||
@@ -86,7 +143,7 @@ async def _scrape_and_write_open_post(page, username, gov, source_id: str, exter
 
             return {
                 post_id: location.pathname.replace(/\/$/, ''),
-                caption: text(captionEl),
+                caption,
                 likes: numberFrom(text(likesEl)),
                 comments: document.querySelectorAll('ul ul li, article ul ul li').length,
                 published_at: timeEl ? (timeEl.getAttribute('datetime') || '') : '',
