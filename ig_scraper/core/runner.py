@@ -126,6 +126,22 @@ async def ensure_logged_in(page, account, max_retries=2):
             print(f"Switched to manual login form for {username} via account picker")
         return switched
 
+    async def _wait_for_session_after_picker_continue() -> bool:
+        wait_seconds = max(2, int(os.getenv("PICKER_CONTINUE_WAIT_SECONDS", "8") or "8"))
+        checks = wait_seconds * 2
+        for _ in range(checks):
+            try:
+                current_url = (page.url or "").lower()
+            except Exception:
+                current_url = ""
+
+            if current_url and "instagram.com" in current_url and "/accounts/login" not in current_url and "/challenge/" not in current_url and "/checkpoint/" not in current_url:
+                return True
+            if await _has_auth_cookies():
+                return True
+            await asyncio.sleep(0.5)
+        return False
+
     async def _handle_account_picker() -> bool:
         try:
             body_text = (await page.inner_text("body")).lower()
@@ -149,16 +165,16 @@ async def ensure_logged_in(page, account, max_retries=2):
         ]
 
         if await _click_text_option(continue_texts, "continue"):
-            if "instagram.com" in (page.url or "").lower() and "/accounts/login" not in (page.url or "").lower():
-                print(f"Used account picker continue for {username}")
-                return True
-            if await _has_auth_cookies():
+            if await _wait_for_session_after_picker_continue():
                 try:
                     await page.goto(BASE_URL, wait_until="domcontentloaded", timeout=45000)
                 except Exception:
                     pass
                 if "instagram.com" in (page.url or "").lower() and "/accounts/login" not in (page.url or "").lower():
                     print(f"Used account picker continue for {username} (cookie-confirmed)")
+                    return True
+                if await _has_auth_cookies():
+                    print(f"Used account picker continue for {username} (session detected)")
                     return True
             print(f"Account picker continue did not establish session for {username}; keeping current picker state")
             return False
