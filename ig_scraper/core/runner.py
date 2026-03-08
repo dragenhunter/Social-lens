@@ -6,7 +6,6 @@ from core.profiles import scrape_profile
 from core.posts import scrape_posts
 from core.baselines import record
 from core.cooldowns import is_on_cooldown, set_cooldown
-from core.quarantine import quarantine_account
 from config.settings import BASE_URL, ACTION_LIMITS
 import asyncio
 import os
@@ -17,6 +16,7 @@ from pathlib import Path
 async def ensure_logged_in(page, account, max_retries=2):
     username = account.get("username")
     password = account.get("password")
+    cookie_only_auth = os.getenv("COOKIE_ONLY_AUTH", "0").strip().lower() in {"1", "true", "yes"}
     account["_login_failure_reason"] = ""
 
     def _is_challenge_like_url(url: str) -> bool:
@@ -86,41 +86,77 @@ async def ensure_logged_in(page, account, max_retries=2):
         if not looks_like_picker:
             return False
 
-        continue_selectors = [
-            f'text=Continue as {username}',
-            'button:has-text("Continue")',
-            'a:has-text("Continue")',
-            'text=Continue',
-        ]
-        for selector in continue_selectors:
-            try:
-                btn = await page.query_selector(selector)
-                if not btn:
+        handle_hint = (username or "").split("@", 1)[0].strip().lower()
+
+        async def _click_text_option(options: list[str], tag: str) -> bool:
+            for option in options:
+                if not option:
                     continue
-                await btn.click(timeout=2500)
-                await page.wait_for_load_state("domcontentloaded", timeout=15000)
-                if "instagram.com" in (page.url or "").lower() and "/accounts/login" not in (page.url or "").lower():
-                    print(f"Used account picker continue for {username}")
+                try:
+                    loc = page.locator(f'text={option}').first
+                    if await loc.count() > 0:
+                        await loc.click(timeout=3000)
+                        await page.wait_for_load_state("domcontentloaded", timeout=15000)
+                        print(f"Clicked account picker option via locator ({tag}): {option}")
+                        return True
+                except Exception:
+                    pass
+
+            try:
+                clicked = await page.evaluate(
+                    """
+                    (labels) => {
+                        const normalized = labels.map(x => String(x || '').toLowerCase().trim()).filter(Boolean);
+                        const nodes = Array.from(document.querySelectorAll('button, a, [role="button"], div, span'));
+                        for (const node of nodes) {
+                            const text = (node.innerText || node.textContent || '').toLowerCase().replace(/\s+/g, ' ').trim();
+                            if (!text) continue;
+                            if (normalized.some(label => text === label || text.includes(label))) {
+                                node.click();
+                                return true;
+                            }
+                        }
+                        return false;
+                    }
+                    """,
+                    options,
+                )
+                if clicked:
+                    await page.wait_for_load_state("domcontentloaded", timeout=15000)
+                    print(f"Clicked account picker option via JS ({tag})")
                     return True
             except Exception:
-                continue
+                pass
 
-        switch_profile_selectors = [
-            'button:has-text("Use another profile")',
-            'a:has-text("Use another profile")',
-            'text=Use another profile',
+            return False
+
+        continue_texts = [
+            f"Continue as {username}" if username else "",
+            f"Continue as {handle_hint}" if handle_hint else "",
+            "Continue",
         ]
-        for selector in switch_profile_selectors:
-            try:
-                btn = await page.query_selector(selector)
-                if not btn:
-                    continue
-                await btn.click(timeout=2500)
-                await page.wait_for_load_state("domcontentloaded", timeout=15000)
-                print(f"Switched to manual login form for {username} via account picker")
-                return False
-            except Exception:
-                continue
+
+        if await _click_text_option(continue_texts, "continue"):
+            if "instagram.com" in (page.url or "").lower() and "/accounts/login" not in (page.url or "").lower():
+                print(f"Used account picker continue for {username}")
+                return True
+            if await _has_auth_cookies():
+                try:
+                    await page.goto(BASE_URL, wait_until="domcontentloaded", timeout=45000)
+                except Exception:
+                    pass
+                if "instagram.com" in (page.url or "").lower() and "/accounts/login" not in (page.url or "").lower():
+                    print(f"Used account picker continue for {username} (cookie-confirmed)")
+                    return True
+
+        switch_profile_texts = [
+            "Use another profile",
+            "Switch accounts",
+            "Use another account",
+        ]
+        if await _click_text_option(switch_profile_texts, "switch_profile"):
+            print(f"Switched to manual login form for {username} via account picker")
+            return False
 
         return False
 
@@ -155,6 +191,21 @@ async def ensure_logged_in(page, account, max_retries=2):
             # Cookie-based success fallback for UI variants where selectors drift.
             if await _has_auth_cookies():
                 return True
+
+        if cookie_only_auth:
+            # In cookie-only mode we never submit credentials.
+            await page.goto(f"{BASE_URL}/accounts/login/", timeout=30000)
+            await page.wait_for_load_state('domcontentloaded')
+
+            if await _handle_account_picker():
+                return True
+
+            if _looks_logged_in(page.url) and await _has_auth_cookies():
+                return True
+
+            account["_login_failure_reason"] = "cookie_session_missing"
+            print(f"Cookie-only auth enabled: no valid IG session cookies for {username}")
+            return False
 
         # Navigate to explicit login page and submit credentials
         await page.goto(f"{BASE_URL}/accounts/login/", timeout=30000)
@@ -419,8 +470,6 @@ async def run_account(account, targets):
         print("Skipping account with missing username")
         return
 
-    quarantine_on_invalid_credentials = os.getenv("QUARANTINE_ON_INVALID_CREDENTIALS", "0").strip().lower() in {"1", "true", "yes"}
-
     if await is_on_cooldown(username):
         return
 
@@ -441,12 +490,11 @@ async def run_account(account, targets):
         login_reason = account.get("_login_failure_reason") or "login_failed"
         print("Login failed for", username)
         if login_reason == "invalid_credentials":
-            if quarantine_on_invalid_credentials:
-                quarantine_account(username, reason=login_reason)
-                print("Quarantined account", username, "due to invalid credentials")
-            else:
-                print("Invalid credentials detected for", username, "(quarantine disabled)")
+            print("Invalid credentials detected for", username)
             await set_cooldown(username, 48)
+        elif login_reason == "cookie_session_missing":
+            print("Cookie-only auth: session missing/expired for", username, "- skipping credential login")
+            await set_cooldown(username, 1)
         elif login_reason == "challenge_required":
             print("Challenge required for", username, "- skipping without quarantine")
             await set_cooldown(username, 6)
@@ -526,7 +574,6 @@ async def run_account(account, targets):
                 continue
     except Exception as e:
         print("Hard error:", e)
-        quarantine_account(username, reason=f"hard_error:{type(e).__name__}")
         await set_cooldown(username, 48)
     finally:
         await ctx.close()

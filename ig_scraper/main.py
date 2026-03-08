@@ -1,6 +1,5 @@
 import asyncio, json
 from core.runner import run_account
-from core.quarantine import is_quarantined
 from config.settings import MAX_WORKERS, ACTIVE_HOURS
 from storage import api_client
 from datetime import datetime
@@ -213,25 +212,10 @@ async def main():
         print(f"No accounts found in {accounts_path}")
         return
 
-    include_quarantined = os.getenv("FORCE_INCLUDE_QUARANTINED", "0").strip() in {"1", "true", "True", "yes", "YES"}
-    eligible_accounts = []
-    quarantined_count = 0
-    for acc in accounts:
-        username = acc.get("username")
-        quarantined, info = is_quarantined(username)
-        if quarantined and not include_quarantined:
-            quarantined_count += 1
-            reason = info.get("reason", "unknown")
-            since = info.get("since", "unknown")
-            print(f"Skipping quarantined account {username} (since={since}, reason={reason})")
-            continue
-        eligible_accounts.append(acc)
-
-    if quarantined_count:
-        print(f"Skipped {quarantined_count} quarantined account(s).")
+    eligible_accounts = list(accounts)
 
     if not eligible_accounts:
-        print("No eligible accounts to run. Re-enable accounts or set FORCE_INCLUDE_QUARANTINED=1.")
+        print("No eligible accounts to run.")
         return
 
     state_path = project_root / "storage" / "state.json"
