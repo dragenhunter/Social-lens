@@ -236,6 +236,9 @@ async def scrape_posts(page, username, budget, gov, source_id=""):
             if not external_post_id:
                 continue
 
+            if external_post_id in recent_ids:
+                continue
+
             budget.consume("opens")
             try:
                 await page.goto(post_url, wait_until="domcontentloaded", timeout=60000)

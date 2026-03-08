@@ -94,13 +94,14 @@ def _resolve_account_secrets(accounts: list[dict]) -> list[dict]:
 async def load_instagram_targets() -> list[dict]:
     targets: list[dict] = []
     seen: set[str] = set()
+    seen_source_ids: set[str] = set()
 
     source_scan_limit = int(os.getenv("SOURCE_SCAN_LIMIT", "0") or "0")
-    platform_ids = [
-        x.strip()
-        for x in os.getenv("INSTAGRAM_PLATFORM_IDS", "4").split(",")
-        if x.strip()
-    ]
+    raw_platform_ids = [x.strip() for x in os.getenv("INSTAGRAM_PLATFORM_IDS", "4").split(",") if x.strip()]
+    platform_ids: list[str] = []
+    for platform_id in raw_platform_ids:
+        if platform_id not in platform_ids:
+            platform_ids.append(platform_id)
 
     try:
         sources = []
@@ -116,7 +117,15 @@ async def load_instagram_targets() -> list[dict]:
                 max_result_count=200,
                 total_limit=source_scan_limit if source_scan_limit > 0 else None,
             )
-            sources.extend(platform_sources)
+            for source in platform_sources:
+                if not isinstance(source, dict):
+                    continue
+                source_id = str(source.get("id", "")).strip()
+                if source_id and source_id in seen_source_ids:
+                    continue
+                if source_id:
+                    seen_source_ids.add(source_id)
+                sources.append(source)
 
         if not sources:
             sources = await api_client.fetch_sources(
@@ -188,6 +197,12 @@ def _select_rotated_account(eligible_accounts: list[dict], state_path: Path):
     _save_run_state(state_path, state)
     return selected
 
+
+def _build_rotated_failover_order(accounts: list[dict], selected: dict) -> list[dict]:
+    selected_username = (selected or {}).get("username", "")
+    remaining = [a for a in accounts if a.get("username", "") != selected_username]
+    return [selected, *remaining]
+
 def in_active_window():
     h = datetime.now().hour
     return ACTIVE_HOURS[0] <= h < ACTIVE_HOURS[1]
@@ -225,7 +240,7 @@ async def main():
             print("No eligible account selected for this run.")
             return
         print(f"Rotating accounts per run: selected {selected.get('username', 'unknown')}")
-        eligible_accounts = [selected]
+        eligible_accounts = _build_rotated_failover_order(eligible_accounts, selected)
 
     targets = await load_instagram_targets()
     if not targets:
@@ -246,12 +261,6 @@ async def main():
         print(f"Applied SCRAPE_TARGET_LIMIT={target_limit}")
 
     print(f"Loaded {len(targets)} Instagram targets from API source list.")
-    batches = [targets[i::len(eligible_accounts)] for i in range(len(eligible_accounts))]
-    account_batches = [(acc, batch) for acc, batch in zip(eligible_accounts, batches) if batch]
-
-    if not account_batches:
-        print("No non-empty account batches to run.")
-        return
 
     semaphore = asyncio.Semaphore(max(1, MAX_WORKERS))
 
@@ -263,6 +272,25 @@ async def main():
                 username = acc.get("username", "unknown")
                 print(f"Account run failed for {username}: {e}")
                 return e
+
+    if rotate_single_account_per_run:
+        for idx, acc in enumerate(eligible_accounts):
+            if idx > 0:
+                print(f"Failing over to next account: {acc.get('username', 'unknown')}")
+            result = await run_limited(acc, targets)
+            if isinstance(result, Exception):
+                continue
+            if result == "ok":
+                return
+        print("All rotated accounts failed in this run.")
+        return
+
+    batches = [targets[i::len(eligible_accounts)] for i in range(len(eligible_accounts))]
+    account_batches = [(acc, batch) for acc, batch in zip(eligible_accounts, batches) if batch]
+
+    if not account_batches:
+        print("No non-empty account batches to run.")
+        return
 
     if strict_serial_accounts:
         print("STRICT_SERIAL_ACCOUNTS enabled: running account batches one-by-one")

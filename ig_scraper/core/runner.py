@@ -104,7 +104,7 @@ async def ensure_logged_in(page, account, max_retries=2):
 
             try:
                 clicked = await page.evaluate(
-                    """
+                    r"""
                     (labels) => {
                         const normalized = labels.map(x => String(x || '').toLowerCase().trim()).filter(Boolean);
                         const nodes = Array.from(document.querySelectorAll('button, a, [role="button"], div, span'));
@@ -468,10 +468,10 @@ async def run_account(account, targets):
     username = account.get("username")
     if not username:
         print("Skipping account with missing username")
-        return
+        return "skipped_missing_username"
 
     if await is_on_cooldown(username):
-        return
+        return "skipped_cooldown"
 
     gov = Governor()
     budget = Budget(ACTION_LIMITS)
@@ -483,7 +483,7 @@ async def run_account(account, targets):
     except Exception as e:
         print(f"Browser startup failed for {username}: {e}")
         await set_cooldown(username, 6)
-        return
+        return "browser_start_failed"
     # ensure we are logged into Instagram (use session if present, otherwise perform login)
     logged = await ensure_logged_in(page, account)
     if not logged:
@@ -503,7 +503,7 @@ async def run_account(account, targets):
             await set_cooldown(username, 6)
         await ctx.close()
         await pw.stop()
-        return
+        return login_reason
     # On successful login, persist storage state so future runs reuse the session
     try:
         os.makedirs(session_dir, exist_ok=True)
@@ -575,6 +575,9 @@ async def run_account(account, targets):
     except Exception as e:
         print("Hard error:", e)
         await set_cooldown(username, 48)
+        return f"hard_error:{type(e).__name__}"
     finally:
         await ctx.close()
         await pw.stop()
+
+    return "ok"
