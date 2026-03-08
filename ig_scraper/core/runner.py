@@ -318,6 +318,54 @@ async def ensure_logged_in(page, account, max_retries=2):
 
             async def _find_login_scope_and_fields():
                 scopes = [page, *list(page.frames)]
+
+                # Include any additional tabs/pages created by Instagram auth flows.
+                try:
+                    for other_page in page.context.pages:
+                        if other_page is page:
+                            continue
+                        scopes.append(other_page)
+                        scopes.extend(list(other_page.frames))
+                except Exception:
+                    pass
+
+                # De-duplicate scope objects while preserving order.
+                deduped_scopes = []
+                seen_scope_ids = set()
+                for scope in scopes:
+                    sid = id(scope)
+                    if sid in seen_scope_ids:
+                        continue
+                    seen_scope_ids.add(sid)
+                    deduped_scopes.append(scope)
+
+                # 1) Preferred: username+password form.
+                for scope in deduped_scopes:
+                    for us in username_selectors:
+                        try:
+                            user_el = await scope.query_selector(us)
+                        except Exception:
+                            user_el = None
+                        if not user_el:
+                            continue
+                        for ps in password_selectors:
+                            try:
+                                pass_el = await scope.query_selector(ps)
+                            except Exception:
+                                pass_el = None
+                            if pass_el:
+                                return scope, us, ps, False
+
+                # 2) Fallback: password-only re-auth form.
+                for scope in deduped_scopes:
+                    for ps in password_selectors:
+                        try:
+                            pass_el = await scope.query_selector(ps)
+                        except Exception:
+                            pass_el = None
+                        if pass_el:
+                            return scope, "", ps, True
+
                 for scope in scopes:
                     for us in username_selectors:
                         try:
@@ -332,15 +380,15 @@ async def ensure_logged_in(page, account, max_retries=2):
                             except Exception:
                                 pass_el = None
                             if pass_el:
-                                return scope, us, ps
-                return None, "", ""
+                                return scope, us, ps, False
+                return None, "", "", False
 
             if _is_challenge_like_url(page.url):
                 account["_login_failure_reason"] = "challenge_required"
                 print(f"Challenge/checkpoint flow detected for {username}: {page.url}")
                 return False
 
-            login_scope, user_selector, pass_selector = await _find_login_scope_and_fields()
+            login_scope, user_selector, pass_selector, password_only_form = await _find_login_scope_and_fields()
             if not login_scope:
                 try:
                     print("Could not find login inputs on url:", page.url)
@@ -365,18 +413,24 @@ async def ensure_logged_in(page, account, max_retries=2):
                 await asyncio.sleep(1)
                 continue
 
-            print("username selector check:", user_selector, "->", True)
+            if user_selector:
+                print("username selector check:", user_selector, "->", True)
+            else:
+                print("username selector check: <not required for password-only re-auth form>")
             print("password selector check:", pass_selector, "->", True)
 
             filled_user = False
-            try:
-                user_el = await login_scope.query_selector(user_selector)
-                if user_el:
-                    await user_el.click()
-                    await user_el.fill(username)
-                    filled_user = True
-            except Exception:
-                filled_user = False
+            if password_only_form:
+                filled_user = True
+            else:
+                try:
+                    user_el = await login_scope.query_selector(user_selector)
+                    if user_el:
+                        await user_el.click()
+                        await user_el.fill(username)
+                        filled_user = True
+                except Exception:
+                    filled_user = False
 
             filled_pass = False
             try:
@@ -404,7 +458,9 @@ async def ensure_logged_in(page, account, max_retries=2):
                 'button:has-text("Log In")',
                 'text=Log In',
                 'button:has-text("Log in")',
-                'form button[type="submit"]'
+                'form button[type="submit"]',
+                'button:has-text("Continue")',
+                'text=Continue',
             ]
             for s in submit_selectors:
                 try:
