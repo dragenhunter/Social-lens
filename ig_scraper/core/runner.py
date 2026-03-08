@@ -72,6 +72,58 @@ async def ensure_logged_in(page, account, max_retries=2):
             except Exception:
                 pass
 
+    async def _handle_account_picker() -> bool:
+        try:
+            body_text = (await page.inner_text("body")).lower()
+        except Exception:
+            body_text = ""
+
+        looks_like_picker = (
+            "use another profile" in body_text
+            or "continue" in body_text
+            or "continue as" in body_text
+        )
+        if not looks_like_picker:
+            return False
+
+        continue_selectors = [
+            f'text=Continue as {username}',
+            'button:has-text("Continue")',
+            'a:has-text("Continue")',
+            'text=Continue',
+        ]
+        for selector in continue_selectors:
+            try:
+                btn = await page.query_selector(selector)
+                if not btn:
+                    continue
+                await btn.click(timeout=2500)
+                await page.wait_for_load_state("domcontentloaded", timeout=15000)
+                if "instagram.com" in (page.url or "").lower() and "/accounts/login" not in (page.url or "").lower():
+                    print(f"Used account picker continue for {username}")
+                    return True
+            except Exception:
+                continue
+
+        switch_profile_selectors = [
+            'button:has-text("Use another profile")',
+            'a:has-text("Use another profile")',
+            'text=Use another profile',
+        ]
+        for selector in switch_profile_selectors:
+            try:
+                btn = await page.query_selector(selector)
+                if not btn:
+                    continue
+                await btn.click(timeout=2500)
+                await page.wait_for_load_state("domcontentloaded", timeout=15000)
+                print(f"Switched to manual login form for {username} via account picker")
+                return False
+            except Exception:
+                continue
+
+        return False
+
     # Try to detect logged-in state via the Home icon
     try:
         await page.goto(BASE_URL, wait_until="domcontentloaded")
@@ -107,6 +159,9 @@ async def ensure_logged_in(page, account, max_retries=2):
         # Navigate to explicit login page and submit credentials
         await page.goto(f"{BASE_URL}/accounts/login/", timeout=30000)
         await page.wait_for_load_state('domcontentloaded')
+
+        if await _handle_account_picker():
+            return True
 
         if _is_challenge_like_url(page.url):
             account["_login_failure_reason"] = "challenge_required"
@@ -181,6 +236,8 @@ async def ensure_logged_in(page, account, max_retries=2):
                 try:
                     await page.reload(wait_until="domcontentloaded", timeout=45000)
                     await _dismiss_common_banners()
+                    if await _handle_account_picker():
+                        return True
                 except Exception:
                     pass
 
@@ -216,6 +273,10 @@ async def ensure_logged_in(page, account, max_retries=2):
                     print("Login page body preview:", body_preview)
                 except Exception:
                     pass
+
+                if await _handle_account_picker():
+                    return True
+
                 failure_reason = await _detect_login_error_reason()
                 if failure_reason:
                     account["_login_failure_reason"] = failure_reason
