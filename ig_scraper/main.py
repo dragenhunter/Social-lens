@@ -7,6 +7,7 @@ from datetime import datetime
 import os
 from pathlib import Path
 from urllib.parse import urlparse
+from typing import Any
 
 
 def _normalize_username(raw: str) -> str:
@@ -149,6 +150,45 @@ async def load_instagram_targets() -> list[dict]:
 
     return targets
 
+
+def _load_run_state(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            payload = json.load(f)
+        if isinstance(payload, dict):
+            return payload
+    except Exception:
+        pass
+    return {}
+
+
+def _save_run_state(path: Path, state: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as f:
+        json.dump(state, f, ensure_ascii=False, indent=2)
+
+
+def _select_rotated_account(eligible_accounts: list[dict], state_path: Path):
+    if not eligible_accounts:
+        return None
+
+    state = _load_run_state(state_path)
+    rotation = state.get("account_rotation") if isinstance(state, dict) else {}
+    if not isinstance(rotation, dict):
+        rotation = {}
+
+    cursor = int(rotation.get("cursor", 0) or 0)
+    normalized = max(0, cursor) % len(eligible_accounts)
+    selected = eligible_accounts[normalized]
+
+    rotation["cursor"] = (normalized + 1) % len(eligible_accounts)
+    rotation["last_account"] = selected.get("username", "")
+    state["account_rotation"] = rotation
+    _save_run_state(state_path, state)
+    return selected
+
 def in_active_window():
     h = datetime.now().hour
     return ACTIVE_HOURS[0] <= h < ACTIVE_HOURS[1]
@@ -156,6 +196,7 @@ def in_active_window():
 async def main():
     force_run = os.getenv("FORCE_RUN", "0").strip() in {"1", "true", "True", "yes", "YES"}
     strict_serial_accounts = os.getenv("STRICT_SERIAL_ACCOUNTS", "0").strip().lower() in {"1", "true", "yes"}
+    rotate_single_account_per_run = os.getenv("ROTATE_SINGLE_ACCOUNT_PER_RUN", "1").strip().lower() in {"1", "true", "yes"}
     if not in_active_window() and not force_run:
         print(f"Outside ACTIVE_HOURS={ACTIVE_HOURS}. Set FORCE_RUN=1 to run manually now.")
         return
@@ -192,6 +233,15 @@ async def main():
     if not eligible_accounts:
         print("No eligible accounts to run. Re-enable accounts or set FORCE_INCLUDE_QUARANTINED=1.")
         return
+
+    state_path = project_root / "storage" / "state.json"
+    if rotate_single_account_per_run:
+        selected = _select_rotated_account(eligible_accounts, state_path)
+        if not selected:
+            print("No eligible account selected for this run.")
+            return
+        print(f"Rotating accounts per run: selected {selected.get('username', 'unknown')}")
+        eligible_accounts = [selected]
 
     targets = await load_instagram_targets()
     if not targets:
