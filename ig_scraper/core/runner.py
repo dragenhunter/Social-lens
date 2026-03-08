@@ -20,6 +20,7 @@ async def ensure_logged_in(page, account, max_retries=2):
     auto_switch_profile_on_picker = os.getenv("AUTO_SWITCH_PROFILE_ON_PICKER", "0").strip().lower() in {"1", "true", "yes"}
     manual_login_seed_on_cookie_miss = os.getenv("MANUAL_LOGIN_SEED_ON_COOKIE_MISS", "1").strip().lower() in {"1", "true", "yes"}
     headless_mode = os.getenv("HEADLESS", "1").strip().lower() in {"1", "true", "yes"}
+    manual_challenge_resolve = os.getenv("MANUAL_CHALLENGE_RESOLVE", "1").strip().lower() in {"1", "true", "yes"}
     account["_login_failure_reason"] = ""
 
     def _is_challenge_like_url(url: str) -> bool:
@@ -162,6 +163,21 @@ async def ensure_logged_in(page, account, max_retries=2):
             await asyncio.sleep(0.5)
         return False
 
+    async def _wait_for_manual_challenge_resolution() -> bool:
+        timeout_seconds = max(30, int(os.getenv("MANUAL_CHALLENGE_TIMEOUT_SECONDS", "300") or "300"))
+        print(
+            f"Challenge/2-step detected for {username}. Complete verification in browser within {timeout_seconds}s."
+        )
+        checks = timeout_seconds * 2
+        for _ in range(checks):
+            try:
+                if _looks_logged_in(page.url) and await _has_auth_cookies():
+                    return True
+            except Exception:
+                pass
+            await asyncio.sleep(0.5)
+        return False
+
     async def _handle_account_picker() -> bool:
         try:
             body_text = (await page.inner_text("body")).lower()
@@ -272,6 +288,10 @@ async def ensure_logged_in(page, account, max_retries=2):
             return True
 
         if _is_challenge_like_url(page.url):
+            if manual_challenge_resolve and not headless_mode:
+                resolved = await _wait_for_manual_challenge_resolution()
+                if resolved:
+                    return True
             account["_login_failure_reason"] = "challenge_required"
             return False
 
@@ -417,8 +437,12 @@ async def ensure_logged_in(page, account, max_retries=2):
                 return None, "", "", False
 
             if _is_challenge_like_url(page.url):
-                account["_login_failure_reason"] = "challenge_required"
                 print(f"Challenge/checkpoint flow detected for {username}: {page.url}")
+                if manual_challenge_resolve and not headless_mode:
+                    resolved = await _wait_for_manual_challenge_resolution()
+                    if resolved:
+                        return True
+                account["_login_failure_reason"] = "challenge_required"
                 return False
 
             login_scope, user_selector, pass_selector, password_only_form = await _find_login_scope_and_fields()
