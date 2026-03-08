@@ -73,6 +73,59 @@ async def ensure_logged_in(page, account, max_retries=2):
             except Exception:
                 pass
 
+    async def _click_text_option(options: list[str], tag: str) -> bool:
+        for option in options:
+            if not option:
+                continue
+            try:
+                loc = page.locator(f'text={option}').first
+                if await loc.count() > 0:
+                    await loc.click(timeout=3000)
+                    await page.wait_for_load_state("domcontentloaded", timeout=15000)
+                    print(f"Clicked account picker option via locator ({tag}): {option}")
+                    return True
+            except Exception:
+                pass
+
+        try:
+            clicked = await page.evaluate(
+                r"""
+                (labels) => {
+                    const normalized = labels.map(x => String(x || '').toLowerCase().trim()).filter(Boolean);
+                    const nodes = Array.from(document.querySelectorAll('button, a, [role="button"], div, span'));
+                    for (const node of nodes) {
+                        const text = (node.innerText || node.textContent || '').toLowerCase().replace(/\s+/g, ' ').trim();
+                        if (!text) continue;
+                        if (normalized.some(label => text === label || text.includes(label))) {
+                            node.click();
+                            return true;
+                        }
+                    }
+                    return false;
+                }
+                """,
+                options,
+            )
+            if clicked:
+                await page.wait_for_load_state("domcontentloaded", timeout=15000)
+                print(f"Clicked account picker option via JS ({tag})")
+                return True
+        except Exception:
+            pass
+
+        return False
+
+    async def _switch_picker_to_manual_login() -> bool:
+        switch_profile_texts = [
+            "Use another profile",
+            "Switch accounts",
+            "Use another account",
+        ]
+        switched = await _click_text_option(switch_profile_texts, "switch_profile")
+        if switched:
+            print(f"Switched to manual login form for {username} via account picker")
+        return switched
+
     async def _handle_account_picker() -> bool:
         try:
             body_text = (await page.inner_text("body")).lower()
@@ -88,48 +141,6 @@ async def ensure_logged_in(page, account, max_retries=2):
             return False
 
         handle_hint = (username or "").split("@", 1)[0].strip().lower()
-
-        async def _click_text_option(options: list[str], tag: str) -> bool:
-            for option in options:
-                if not option:
-                    continue
-                try:
-                    loc = page.locator(f'text={option}').first
-                    if await loc.count() > 0:
-                        await loc.click(timeout=3000)
-                        await page.wait_for_load_state("domcontentloaded", timeout=15000)
-                        print(f"Clicked account picker option via locator ({tag}): {option}")
-                        return True
-                except Exception:
-                    pass
-
-            try:
-                clicked = await page.evaluate(
-                    r"""
-                    (labels) => {
-                        const normalized = labels.map(x => String(x || '').toLowerCase().trim()).filter(Boolean);
-                        const nodes = Array.from(document.querySelectorAll('button, a, [role="button"], div, span'));
-                        for (const node of nodes) {
-                            const text = (node.innerText || node.textContent || '').toLowerCase().replace(/\s+/g, ' ').trim();
-                            if (!text) continue;
-                            if (normalized.some(label => text === label || text.includes(label))) {
-                                node.click();
-                                return true;
-                            }
-                        }
-                        return false;
-                    }
-                    """,
-                    options,
-                )
-                if clicked:
-                    await page.wait_for_load_state("domcontentloaded", timeout=15000)
-                    print(f"Clicked account picker option via JS ({tag})")
-                    return True
-            except Exception:
-                pass
-
-            return False
 
         continue_texts = [
             f"Continue as {username}" if username else "",
@@ -152,13 +163,7 @@ async def ensure_logged_in(page, account, max_retries=2):
             print(f"Account picker continue did not establish session for {username}; keeping current picker state")
             return False
 
-        switch_profile_texts = [
-            "Use another profile",
-            "Switch accounts",
-            "Use another account",
-        ]
-        if auto_switch_profile_on_picker and await _click_text_option(switch_profile_texts, "switch_profile"):
-            print(f"Switched to manual login form for {username} via account picker")
+        if auto_switch_profile_on_picker and await _switch_picker_to_manual_login():
             return False
 
         return False
@@ -330,6 +335,12 @@ async def ensure_logged_in(page, account, max_retries=2):
 
                 if await _handle_account_picker():
                     return True
+
+                if not cookie_only_auth:
+                    switched = await _switch_picker_to_manual_login()
+                    if switched:
+                        await asyncio.sleep(0.5)
+                        continue
 
                 failure_reason = await _detect_login_error_reason()
                 if failure_reason:
