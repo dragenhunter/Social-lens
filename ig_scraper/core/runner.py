@@ -18,6 +18,8 @@ async def ensure_logged_in(page, account, max_retries=2):
     password = account.get("password")
     cookie_only_auth = os.getenv("COOKIE_ONLY_AUTH", "0").strip().lower() in {"1", "true", "yes"}
     auto_switch_profile_on_picker = os.getenv("AUTO_SWITCH_PROFILE_ON_PICKER", "0").strip().lower() in {"1", "true", "yes"}
+    manual_login_seed_on_cookie_miss = os.getenv("MANUAL_LOGIN_SEED_ON_COOKIE_MISS", "1").strip().lower() in {"1", "true", "yes"}
+    headless_mode = os.getenv("HEADLESS", "1").strip().lower() in {"1", "true", "yes"}
     account["_login_failure_reason"] = ""
 
     def _is_challenge_like_url(url: str) -> bool:
@@ -142,6 +144,24 @@ async def ensure_logged_in(page, account, max_retries=2):
             await asyncio.sleep(0.5)
         return False
 
+    async def _wait_for_manual_login_seed() -> bool:
+        timeout_seconds = max(30, int(os.getenv("MANUAL_LOGIN_TIMEOUT_SECONDS", "300") or "300"))
+        print(
+            f"Manual login required for {username}. Complete Instagram login in the open browser window "
+            f"within {timeout_seconds}s to seed cookies."
+        )
+        checks = timeout_seconds * 2
+        for _ in range(checks):
+            if await _handle_account_picker():
+                return True
+            try:
+                if _looks_logged_in(page.url) and await _has_auth_cookies():
+                    return True
+            except Exception:
+                pass
+            await asyncio.sleep(0.5)
+        return False
+
     async def _handle_account_picker() -> bool:
         try:
             body_text = (await page.inner_text("body")).lower()
@@ -226,6 +246,19 @@ async def ensure_logged_in(page, account, max_retries=2):
 
             if _looks_logged_in(page.url) and await _has_auth_cookies():
                 return True
+
+            if manual_login_seed_on_cookie_miss:
+                if headless_mode:
+                    print(
+                        f"Cookie-only auth: manual seeding requested for {username}, but HEADLESS=1. "
+                        "Set HEADLESS=0 to complete first-time login and save cookies."
+                    )
+                else:
+                    seeded = await _wait_for_manual_login_seed()
+                    if seeded:
+                        print(f"Manual login seed complete for {username}; cookies are now available.")
+                        return True
+                    print(f"Manual login seed timed out for {username}.")
 
             account["_login_failure_reason"] = "cookie_session_missing"
             print(f"Cookie-only auth enabled: no valid IG session cookies for {username}")
