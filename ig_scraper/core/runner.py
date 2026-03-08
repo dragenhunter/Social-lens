@@ -475,6 +475,12 @@ async def run_account(account, targets):
 
     gov = Governor()
     budget = Budget(ACTION_LIMITS)
+    total_targets = len(targets) if isinstance(targets, list) else 0
+    processed_targets = 0
+    target_errors = 0
+    skipped_empty_username = 0
+    skipped_relogin_failed = 0
+    skipped_challenge = 0
 
     session_dir = account.get("session") or f"sessions/{username}"
 
@@ -523,6 +529,7 @@ async def run_account(account, targets):
                     source_id = ""
 
                 if not u:
+                    skipped_empty_username += 1
                     continue
 
                 await page.goto(f"{BASE_URL}/{u}/", wait_until="domcontentloaded", timeout=60000)
@@ -545,12 +552,14 @@ async def run_account(account, targets):
                     relogged = await ensure_logged_in(page, account, max_retries=1)
                     if not relogged:
                         print(f"Skipping {u}: redirected to login and relogin failed")
+                        skipped_relogin_failed += 1
                         continue
                     await page.goto(f"{BASE_URL}/{u}/", wait_until="domcontentloaded", timeout=60000)
                     await pause(gov.mult)
 
                 if "/challenge/" in page.url or "/checkpoint/" in page.url:
                     print(f"Skipping {u}: challenge/checkpoint page encountered ({page.url})")
+                    skipped_challenge += 1
                     continue
 
                 html = ""
@@ -569,8 +578,10 @@ async def run_account(account, targets):
 
                 await scrape_profile(page, u)
                 await scrape_posts(page, u, budget, gov, source_id=source_id)
+                processed_targets += 1
             except Exception as profile_error:
                 print(f"Error scraping {u}: {profile_error}")
+                target_errors += 1
                 continue
     except Exception as e:
         print("Hard error:", e)
@@ -579,5 +590,11 @@ async def run_account(account, targets):
     finally:
         await ctx.close()
         await pw.stop()
+
+    print(
+        f"Account summary {username}: total={total_targets}, processed={processed_targets}, "
+        f"target_errors={target_errors}, skipped_empty_username={skipped_empty_username}, "
+        f"skipped_relogin_failed={skipped_relogin_failed}, skipped_challenge={skipped_challenge}"
+    )
 
     return "ok"

@@ -95,6 +95,7 @@ async def load_instagram_targets() -> list[dict]:
     targets: list[dict] = []
     seen: set[str] = set()
     seen_source_ids: set[str] = set()
+    dedup_usernames = os.getenv("DEDUP_TARGET_USERNAMES", "0").strip().lower() in {"1", "true", "yes"}
 
     source_scan_limit = int(os.getenv("SOURCE_SCAN_LIMIT", "0") or "0")
     raw_platform_ids = [x.strip() for x in os.getenv("INSTAGRAM_PLATFORM_IDS", "4").split(",") if x.strip()]
@@ -102,6 +103,11 @@ async def load_instagram_targets() -> list[dict]:
     for platform_id in raw_platform_ids:
         if platform_id not in platform_ids:
             platform_ids.append(platform_id)
+
+    raw_sources_count = 0
+    filtered_non_instagram = 0
+    missing_username = 0
+    duplicate_username = 0
 
     try:
         sources = []
@@ -117,6 +123,7 @@ async def load_instagram_targets() -> list[dict]:
                 max_result_count=200,
                 total_limit=source_scan_limit if source_scan_limit > 0 else None,
             )
+            raw_sources_count += len(platform_sources)
             for source in platform_sources:
                 if not isinstance(source, dict):
                     continue
@@ -133,6 +140,7 @@ async def load_instagram_targets() -> list[dict]:
                 max_result_count=200,
                 total_limit=source_scan_limit if source_scan_limit > 0 else None,
             )
+            raw_sources_count = len(sources)
     except Exception as e:
         print(f"Failed to fetch source accounts from API: {e}")
         return []
@@ -141,12 +149,17 @@ async def load_instagram_targets() -> list[dict]:
         if not isinstance(source, dict):
             continue
         if not _is_instagram_source(source):
+            filtered_non_instagram += 1
             continue
 
         username = _extract_username_from_url(source.get("sourceUrl", ""))
         if not username:
             username = _normalize_username(source.get("sourceHandle", ""))
-        if not username or username in seen:
+        if not username:
+            missing_username += 1
+            continue
+        if dedup_usernames and username in seen:
+            duplicate_username += 1
             continue
 
         seen.add(username)
@@ -155,6 +168,17 @@ async def load_instagram_targets() -> list[dict]:
             "source_id": source.get("id", ""),
             "source_url": source.get("sourceUrl", ""),
         })
+
+    print(
+        "Target load summary:",
+        f"raw={raw_sources_count}",
+        f"after_source_id_dedupe={len(sources)}",
+        f"non_instagram_filtered={filtered_non_instagram}",
+        f"missing_username={missing_username}",
+        f"duplicate_username_skipped={duplicate_username}",
+        f"dedup_usernames={'on' if dedup_usernames else 'off'}",
+        f"final_targets={len(targets)}",
+    )
 
     return targets
 
