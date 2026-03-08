@@ -40,6 +40,38 @@ async def ensure_logged_in(page, account, max_retries=2):
         cookie_names = {str(cookie.get("name", "")).lower() for cookie in cookies}
         return "sessionid" in cookie_names and "ds_user_id" in cookie_names
 
+    async def _save_login_debug_artifacts(tag: str) -> None:
+        try:
+            safe_tag = re.sub(r"[^a-zA-Z0-9_-]", "_", (tag or "debug"))
+            png_path = f"run_e2e_login_debug_{safe_tag}.png"
+            html_path = f"run_e2e_login_debug_{safe_tag}.html"
+            await page.screenshot(path=png_path, full_page=True)
+            html = await page.content()
+            html = re.sub(r'(<input[^>]+type="password"[^>]*value=")([^"]*)(")', r'\1***\3', html, flags=re.IGNORECASE)
+            html = re.sub(r'(<input[^>]+name="(?:email|username)"[^>]*value=")([^"]*)(")', r'\1***\3', html, flags=re.IGNORECASE)
+            with open(html_path, "w", encoding="utf-8") as fh:
+                fh.write(html)
+            print(f"Saved {png_path} and {html_path}")
+        except Exception as e:
+            print("Failed to save debug artifacts:", e)
+
+    async def _dismiss_common_banners() -> None:
+        for banner in (
+            'text=Accept All',
+            'text=Accept',
+            'text=Agree',
+            'button:has-text("Accept")',
+            'button:has-text("Allow all cookies")',
+            'button:has-text("Allow essential and optional cookies")',
+            'button:has-text("Only allow essential cookies")',
+            'button:has-text("Not Now")',
+        ):
+            try:
+                await page.click(banner, timeout=1200)
+                break
+            except Exception:
+                pass
+
     # Try to detect logged-in state via the Home icon
     try:
         await page.goto(BASE_URL, wait_until="domcontentloaded")
@@ -81,12 +113,7 @@ async def ensure_logged_in(page, account, max_retries=2):
             return False
 
         # try dismissing common cookie/privacy banners
-        for banner in ('text=Accept All', 'text=Accept', 'text=Agree', 'button:has-text("Accept")'):
-            try:
-                await page.click(banner, timeout=1500)
-                break
-            except Exception:
-                pass
+        await _dismiss_common_banners()
 
         # wait for any known login input to appear; IG can serve multiple form variants
         try:
@@ -102,6 +129,7 @@ async def ensure_logged_in(page, account, max_retries=2):
             'input[name="email"]',
             'input[autocomplete="username"]',
             'input[aria-label="Phone number, username, or email"]',
+            'input[type="email"]',
             'input[type="text"]',
         ]
         password_selectors = [
@@ -137,6 +165,8 @@ async def ensure_logged_in(page, account, max_retries=2):
                     return "invalid_credentials"
                 if "challenge" in body_text or "unusual login attempt" in body_text or "checkpoint" in body_text:
                     return "challenge_required"
+                if "please wait a few minutes" in body_text or "try again later" in body_text:
+                    return "rate_limited"
             except Exception:
                 pass
 
@@ -145,55 +175,80 @@ async def ensure_logged_in(page, account, max_retries=2):
         for attempt in range(max_retries):
             print(f"Login attempt {attempt+1}/{max_retries} for {username}")
 
+            await _dismiss_common_banners()
+
+            if attempt > 0:
+                try:
+                    await page.reload(wait_until="domcontentloaded", timeout=45000)
+                    await _dismiss_common_banners()
+                except Exception:
+                    pass
+
+            async def _find_login_scope_and_fields():
+                scopes = [page, *list(page.frames)]
+                for scope in scopes:
+                    for us in username_selectors:
+                        try:
+                            user_el = await scope.query_selector(us)
+                        except Exception:
+                            user_el = None
+                        if not user_el:
+                            continue
+                        for ps in password_selectors:
+                            try:
+                                pass_el = await scope.query_selector(ps)
+                            except Exception:
+                                pass_el = None
+                            if pass_el:
+                                return scope, us, ps
+                return None, "", ""
+
             if _is_challenge_like_url(page.url):
                 account["_login_failure_reason"] = "challenge_required"
                 print(f"Challenge/checkpoint flow detected for {username}: {page.url}")
                 return False
 
-            # fill username
-            filled_user = False
-            for us in username_selectors:
-                try:
-                    el = await page.query_selector(us)
-                    print("username selector check:", us, "->", bool(el))
-                    if not el:
-                        continue
-                    await el.click()
-                    await el.fill(username)
-                    # ensure frameworks see the change
-                    try:
-                        await page.evaluate("(s,v)=>{const e=document.querySelector(s); if(e){e.focus(); e.value=v; e.dispatchEvent(new Event('input',{bubbles:true})); e.dispatchEvent(new Event('change',{bubbles:true}));}}", us, username)
-                    except Exception:
-                        pass
-                    filled_user = True
-                    break
-                except Exception:
-                    continue
-
-            # fill password
-            filled_pass = False
-            for ps in password_selectors:
-                try:
-                    el = await page.query_selector(ps)
-                    print("password selector check:", ps, "->", bool(el))
-                    if not el:
-                        continue
-                    await el.click()
-                    await el.fill(password)
-                    try:
-                        await page.evaluate("(s,v)=>{const e=document.querySelector(s); if(e){e.focus(); e.value=v; e.dispatchEvent(new Event('input',{bubbles:true})); e.dispatchEvent(new Event('change',{bubbles:true}));}}", ps, password)
-                    except Exception:
-                        pass
-                    filled_pass = True
-                    break
-                except Exception:
-                    continue
-
-            if not (filled_user and filled_pass):
+            login_scope, user_selector, pass_selector = await _find_login_scope_and_fields()
+            if not login_scope:
                 try:
                     print("Could not find login inputs on url:", page.url)
+                    body_preview = (await page.inner_text("body"))[:220].replace("\n", " ")
+                    print("Login page body preview:", body_preview)
                 except Exception:
                     pass
+                failure_reason = await _detect_login_error_reason()
+                if failure_reason:
+                    account["_login_failure_reason"] = failure_reason
+                await _save_login_debug_artifacts(f"no_inputs_attempt_{attempt+1}")
+                await asyncio.sleep(1)
+                continue
+
+            print("username selector check:", user_selector, "->", True)
+            print("password selector check:", pass_selector, "->", True)
+
+            filled_user = False
+            try:
+                user_el = await login_scope.query_selector(user_selector)
+                if user_el:
+                    await user_el.click()
+                    await user_el.fill(username)
+                    filled_user = True
+            except Exception:
+                filled_user = False
+
+            filled_pass = False
+            try:
+                pass_el = await login_scope.query_selector(pass_selector)
+                if pass_el:
+                    await pass_el.click()
+                    await pass_el.fill(password)
+                    filled_pass = True
+            except Exception:
+                filled_pass = False
+
+            if not (filled_user and filled_pass):
+                print("Found login fields but failed to fill one or both fields")
+                await _save_login_debug_artifacts(f"fill_failed_attempt_{attempt+1}")
                 await asyncio.sleep(1)
                 continue
 
@@ -211,7 +266,7 @@ async def ensure_logged_in(page, account, max_retries=2):
             ]
             for s in submit_selectors:
                 try:
-                    btn = await page.query_selector(s)
+                    btn = await login_scope.query_selector(s)
                     print('submit selector check:', s, '->', bool(btn))
                     if not btn:
                         continue
@@ -238,7 +293,7 @@ async def ensure_logged_in(page, account, max_retries=2):
                 try:
                     for ps in password_selectors:
                         try:
-                            el = await page.query_selector(ps)
+                            el = await login_scope.query_selector(ps)
                             if el:
                                 await el.press('Enter')
                                 print('Pressed Enter on', ps)
@@ -287,16 +342,7 @@ async def ensure_logged_in(page, account, max_retries=2):
                     return False
 
             # save debug artifacts to inspect why login didn't complete
-            try:
-                await page.screenshot(path="run_e2e_login_debug.png", full_page=True)
-                html = await page.content()
-                html = re.sub(r'(<input[^>]+type="password"[^>]*value=")([^"]*)(")', r'\1***\3', html, flags=re.IGNORECASE)
-                html = re.sub(r'(<input[^>]+name="(?:email|username)"[^>]*value=")([^"]*)(")', r'\1***\3', html, flags=re.IGNORECASE)
-                with open("run_e2e_login_debug.html", "w", encoding="utf-8") as fh:
-                    fh.write(html)
-                print("Saved run_e2e_login_debug.png and run_e2e_login_debug.html")
-            except Exception as e:
-                print("Failed to save debug artifacts:", e)
+            await _save_login_debug_artifacts(f"post_submit_attempt_{attempt+1}")
             await asyncio.sleep(2)
         if not account.get("_login_failure_reason"):
             account["_login_failure_reason"] = "login_failed"
@@ -311,6 +357,8 @@ async def run_account(account, targets):
     if not username:
         print("Skipping account with missing username")
         return
+
+    quarantine_on_invalid_credentials = os.getenv("QUARANTINE_ON_INVALID_CREDENTIALS", "0").strip().lower() in {"1", "true", "yes"}
 
     if await is_on_cooldown(username):
         return
@@ -332,8 +380,11 @@ async def run_account(account, targets):
         login_reason = account.get("_login_failure_reason") or "login_failed"
         print("Login failed for", username)
         if login_reason == "invalid_credentials":
-            quarantine_account(username, reason=login_reason)
-            print("Quarantined account", username, "due to invalid credentials")
+            if quarantine_on_invalid_credentials:
+                quarantine_account(username, reason=login_reason)
+                print("Quarantined account", username, "due to invalid credentials")
+            else:
+                print("Invalid credentials detected for", username, "(quarantine disabled)")
             await set_cooldown(username, 48)
         elif login_reason == "challenge_required":
             print("Challenge required for", username, "- skipping without quarantine")
