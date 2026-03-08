@@ -17,6 +17,7 @@ async def ensure_logged_in(page, account, max_retries=2):
     username = account.get("username")
     password = account.get("password")
     cookie_only_auth = os.getenv("COOKIE_ONLY_AUTH", "0").strip().lower() in {"1", "true", "yes"}
+    auto_switch_profile_on_picker = os.getenv("AUTO_SWITCH_PROFILE_ON_PICKER", "0").strip().lower() in {"1", "true", "yes"}
     account["_login_failure_reason"] = ""
 
     def _is_challenge_like_url(url: str) -> bool:
@@ -148,13 +149,15 @@ async def ensure_logged_in(page, account, max_retries=2):
                 if "instagram.com" in (page.url or "").lower() and "/accounts/login" not in (page.url or "").lower():
                     print(f"Used account picker continue for {username} (cookie-confirmed)")
                     return True
+            print(f"Account picker continue did not establish session for {username}; keeping current picker state")
+            return False
 
         switch_profile_texts = [
             "Use another profile",
             "Switch accounts",
             "Use another account",
         ]
-        if await _click_text_option(switch_profile_texts, "switch_profile"):
+        if auto_switch_profile_on_picker and await _click_text_option(switch_profile_texts, "switch_profile"):
             print(f"Switched to manual login form for {username} via account picker")
             return False
 
