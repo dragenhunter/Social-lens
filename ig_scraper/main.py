@@ -197,9 +197,15 @@ def _load_run_state(path: Path) -> dict[str, Any]:
 
 
 def _save_run_state(path: Path, state: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as f:
-        json.dump(state, f, ensure_ascii=False, indent=2)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+    except PermissionError as exc:
+        print(f"Warning: could not save run state to {path} (permission denied: {exc}). "
+              "Set STATE_PATH env var to a writable location.")
+    except OSError as exc:
+        print(f"Warning: could not save run state to {path}: {exc}")
 
 
 def _select_rotated_account(eligible_accounts: list[dict], state_path: Path):
@@ -257,7 +263,8 @@ async def main():
         print("No eligible accounts to run.")
         return
 
-    state_path = project_root / "storage" / "state.json"
+    _state_path_env = os.getenv("STATE_PATH", "").strip()
+    state_path = Path(_state_path_env) if _state_path_env else project_root / "storage" / "state.json"
     if rotate_single_account_per_run:
         selected = _select_rotated_account(eligible_accounts, state_path)
         if not selected:
