@@ -39,15 +39,14 @@ def load_accounts() -> list[dict]:
 
 async def check_login(account: dict) -> dict:
     username = account.get("username") or ""
-    password = account.get("password") or ""
     session_dir = account.get("session") or (f"sessions/{username}" if username else "")
 
-    if not username or not password:
+    if not username:
         return {
             "username": username or "<missing>",
             "session": session_dir,
             "status": "skipped",
-            "reason": "missing_username_or_password",
+            "reason": "missing_username",
         }
 
     try:

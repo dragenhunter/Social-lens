@@ -82,9 +82,9 @@ def _resolve_account_secrets(accounts: list[dict]) -> list[dict]:
             for key, value in account.items()
         }
 
-        if not mapped.get("username") or not mapped.get("password"):
+        if not mapped.get("username"):
             session = mapped.get("session", "unknown-session")
-            print(f"Skipping account config for {session}: missing username/password after env resolution.")
+            print(f"Skipping account config for {session}: missing username after env resolution.")
             continue
 
         resolved.append(mapped)

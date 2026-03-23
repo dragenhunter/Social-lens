@@ -1,7 +1,7 @@
 from storage import api_client
 from datetime import datetime
-import asyncio
 from config.settings import ENABLE_POST_HISTORY_WRITE
+from core.background import create_logged_task
 
 def record_post_diff(post):
     if not ENABLE_POST_HISTORY_WRITE:
@@ -16,7 +16,10 @@ def record_post_diff(post):
             "comments": post.get("comments"),
             "scrapedAt": datetime.utcnow().isoformat()
         }
-        asyncio.create_task(api_client.record_post_history(entry))
-    except Exception:
-        # best-effort: ignore failures
+        create_logged_task(
+            api_client.record_post_history(entry),
+            f"record post history for {post.get('post_id', '<unknown>')}",
+        )
+    except RuntimeError:
+        # No active event loop: keep best-effort behavior without crashing scrape flow.
         pass

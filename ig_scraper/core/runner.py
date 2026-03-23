@@ -17,10 +17,13 @@ async def ensure_logged_in(page, account, max_retries=2):
     username = account.get("username")
     password = account.get("password")
     cookie_only_auth = os.getenv("COOKIE_ONLY_AUTH", "0").strip().lower() in {"1", "true", "yes"}
+    manual_login_only = os.getenv("MANUAL_LOGIN_ONLY", "0").strip().lower() in {"1", "true", "yes"}
     auto_switch_profile_on_picker = os.getenv("AUTO_SWITCH_PROFILE_ON_PICKER", "0").strip().lower() in {"1", "true", "yes"}
     manual_login_seed_on_cookie_miss = os.getenv("MANUAL_LOGIN_SEED_ON_COOKIE_MISS", "1").strip().lower() in {"1", "true", "yes"}
     headless_mode = os.getenv("HEADLESS", "1").strip().lower() in {"1", "true", "yes"}
     manual_challenge_resolve = os.getenv("MANUAL_CHALLENGE_RESOLVE", "1").strip().lower() in {"1", "true", "yes"}
+    has_password = bool((password or "").strip())
+    session_seed_only_mode = cookie_only_auth or manual_login_only or not has_password
     account["_login_failure_reason"] = ""
 
     def _is_challenge_like_url(url: str) -> bool:
@@ -252,8 +255,8 @@ async def ensure_logged_in(page, account, max_retries=2):
             if await _has_auth_cookies():
                 return True
 
-        if cookie_only_auth:
-            # In cookie-only mode we never submit credentials.
+        if session_seed_only_mode:
+            # In manual-login/session-seed mode we never submit credentials.
             await page.goto(f"{BASE_URL}/accounts/login/", timeout=30000)
             await page.wait_for_load_state('domcontentloaded')
 
@@ -266,7 +269,7 @@ async def ensure_logged_in(page, account, max_retries=2):
             if manual_login_seed_on_cookie_miss:
                 if headless_mode:
                     print(
-                        f"Cookie-only auth: manual seeding requested for {username}, but HEADLESS=1. "
+                        f"Manual session seeding requested for {username}, but HEADLESS=1. "
                         "Set HEADLESS=0 to complete first-time login and save cookies."
                     )
                 else:
@@ -277,7 +280,10 @@ async def ensure_logged_in(page, account, max_retries=2):
                     print(f"Manual login seed timed out for {username}.")
 
             account["_login_failure_reason"] = "cookie_session_missing"
-            print(f"Cookie-only auth enabled: no valid IG session cookies for {username}")
+            if not has_password:
+                print(f"No valid IG session cookies for {username}, and no password is configured. Manual login is required.")
+            else:
+                print(f"Session-seed auth enabled: no valid IG session cookies for {username}")
             return False
 
         # Navigate to explicit login page and submit credentials

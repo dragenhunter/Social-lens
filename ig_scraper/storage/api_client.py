@@ -271,38 +271,6 @@ class APIClient:
         resp = await self._request_with_retries("put", "/api/app/scraper/posts", json=posts)
         return self._parse_json_safe(resp)
 
-    async def post_exists(self, source_id: str, external_post_id: str) -> bool:
-        if not source_id or not external_post_id:
-            return False
-
-        normalized_target = self._normalize_external_post_id(external_post_id)
-        if not normalized_target:
-            return False
-
-        resp = await self._request_with_retries(
-            "get",
-            "/api/app/scraper/posts",
-            params={
-                "SourceId": source_id,
-                "ExternalPostId": normalized_target,
-                "SkipCount": 0,
-                "MaxResultCount": 50,
-            },
-        )
-        data = self._parse_json_safe(resp)
-        if not isinstance(data, dict):
-            return False
-        items = data.get("items")
-        if isinstance(items, list):
-            for item in items:
-                if not isinstance(item, dict):
-                    continue
-                current = self._normalize_external_post_id(item.get("externalPostId"))
-                if current == normalized_target:
-                    return True
-
-        return False
-
     async def write_profile(self, profile: dict[str, Any]) -> Any:
         resp = await self._request_with_retries("put", "/api/app/profiles", json=profile)
         return self._parse_json_safe(resp)
@@ -345,10 +313,6 @@ async def fetch_sources(
 
 async def write_posts(posts: list[dict[str, Any]]):
     return await client.write_posts(posts)
-
-
-async def post_exists(source_id: str, external_post_id: str):
-    return await client.post_exists(source_id, external_post_id)
 
 
 async def get_recent_post_ids(source_id: str, limit: int = 50):

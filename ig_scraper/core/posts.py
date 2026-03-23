@@ -266,14 +266,7 @@ async def scrape_posts(page, username, budget, gov, source_id=""):
                 older_post_boundary_hit = True
                 break
 
-            exists = external_post_id in recent_ids
-            if not exists:
-                try:
-                    exists = await api_client.post_exists(source_id, external_post_id)
-                except Exception:
-                    exists = False
-
-            if exists:
+            if external_post_id in recent_ids:
                 try:
                     await page.go_back(wait_until="domcontentloaded", timeout=60000)
                 except Exception:

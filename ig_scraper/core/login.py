@@ -15,8 +15,8 @@ def login_sync(username: Optional[str], password: Optional[str]) -> bool:
     Returns True on success, False otherwise.
     """
     try:
-        c = api_client._sync_login()
-        return True
+        with api_client._sync_login():
+            return True
     except Exception:
         return False
 
@@ -27,9 +27,7 @@ async def login(username: Optional[str], password: Optional[str]) -> bool:
     Returns True when a token was obtained or the login endpoint succeeded.
     """
     try:
-        await api_client.client.login(username=username, password=password)
-        # consider success if either token or access_token present
-        return bool(api_client.client._access_token or api_client.client._token)
+        return await api_client.client.login(username=username, password=password)
     except Exception:
         return False
 
